@@ -59,6 +59,7 @@ const (
 	H265
 	VP8
 	VP9
+	AV1
 )
 
 var VideoCodecName = map[VideoCodec]string{
@@ -66,6 +67,7 @@ var VideoCodecName = map[VideoCodec]string{
 	H265: "HEVC",
 	VP8:  "VP8",
 	VP9:  "VP9",
+	AV1:  "AV1",
 }
 
 var FfmpegNameToVideoCodec = map[string]VideoCodec{
@@ -73,6 +75,7 @@ var FfmpegNameToVideoCodec = map[string]VideoCodec{
 	"hevc": H265,
 	"vp8":  VP8,
 	"vp9":  VP9,
+	"av1":  AV1,
 }
 
 // Standard Profiles:

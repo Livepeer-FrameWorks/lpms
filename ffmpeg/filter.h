@@ -50,6 +50,7 @@ struct output_ctx {
 
   // Optional hardware encoding support
   enum AVHWDeviceType hw_type;
+  char *device; // device path for hw encoding (e.g. /dev/dri/renderD128 for QSV)
 
   // muxer and encoder information (name + options)
   component_opts *muxer;

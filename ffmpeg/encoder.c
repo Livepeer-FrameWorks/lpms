@@ -261,7 +261,9 @@ int open_output(struct output_ctx *octx, struct input_ctx *ictx)
     ret = avcodec_open2(vc, codec, &opts);
     if (opts) av_dict_free(&opts);
     if (ret < 0) LPMS_ERR(open_output_err, "Error opening video encoder");
-    octx->hw_type = ictx->hw_type;
+    // Only inherit input hw_type if output hw_type wasn't set from output_params
+    // This preserves explicitly set output hw_type (e.g., QSV for SW→QSV)
+    if (octx->hw_type == AV_HWDEVICE_TYPE_NONE) octx->hw_type = ictx->hw_type;
   }
 
   if (!ictx->transmuxing) {
@@ -434,7 +436,7 @@ int encode(AVCodecContext* encoder, AVFrame *frame, struct output_ctx* octx, AVS
   }
 
   if (AVMEDIA_TYPE_VIDEO == ost->codecpar->codec_type &&
-      AV_HWDEVICE_TYPE_CUDA == octx->hw_type && !frame) {
+      (AV_HWDEVICE_TYPE_CUDA == octx->hw_type || AV_HWDEVICE_TYPE_QSV == octx->hw_type) && !frame) {
     avcodec_flush_buffers(encoder);
   }
 

@@ -278,10 +278,33 @@ int open_video_decoder(input_params *params, struct input_ctx *ctx)
   } else {
     if (params->hw_type > AV_HWDEVICE_TYPE_NONE) {
       if (AV_PIX_FMT_YUV420P != ic->streams[ctx->vi]->codecpar->format &&
-          AV_PIX_FMT_YUVJ420P != ic->streams[ctx->vi]->codecpar->format) {
+          AV_PIX_FMT_YUVJ420P != ic->streams[ctx->vi]->codecpar->format &&
+          AV_PIX_FMT_YUV420P10LE != ic->streams[ctx->vi]->codecpar->format) {
         // TODO check whether the color range is truncated if yuvj420p is used
         ret = lpms_ERR_INPUT_PIXFMT;
         LPMS_ERR(open_decoder_err, "Non 4:2:0 pixel format detected in input");
+      }
+      // Prefer decoders that natively support the requested hw device type.
+      // Matches FFmpeg's own choose_decoder() in fftools/ffmpeg_demux.c:
+      // iterate all decoders for this codec ID, pick first whose
+      // avcodec_get_hw_config() declares support for our device type.
+      {
+        const AVCodec *c;
+        void *iter = NULL;
+        enum AVCodecID codec_id = ic->streams[ctx->vi]->codecpar->codec_id;
+        while ((c = av_codec_iterate(&iter))) {
+          if (c->id != codec_id || !av_codec_is_decoder(c))
+            continue;
+          for (int j = 0;; j++) {
+            const AVCodecHWConfig *config = avcodec_get_hw_config(c, j);
+            if (!config) break;
+            if (config->device_type == params->hw_type) {
+              codec = c;
+              goto hw_decoder_found;
+            }
+          }
+        }
+        hw_decoder_found:;
       }
     } else if (params->video.name && strlen(params->video.name) != 0) {
       // Try to find user specified decoder by name
@@ -296,9 +319,22 @@ int open_video_decoder(input_params *params, struct input_ctx *ctx)
     if (ret < 0) LPMS_ERR(open_decoder_err, "Unable to assign video params");
     vc->opaque = (void*)ctx;
     // XXX Could this break if the original device falls out of scope in golang?
-    if (params->hw_type == AV_HWDEVICE_TYPE_CUDA) {
-      // First set the hw device then set the hw frame
-      ret = av_hwdevice_ctx_create(&ctx->hw_device_ctx, params->hw_type, params->device, NULL, 0);
+    if (params->hw_type == AV_HWDEVICE_TYPE_CUDA ||
+        params->hw_type == AV_HWDEVICE_TYPE_QSV ||
+        params->hw_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX) {
+      if (params->hw_type == AV_HWDEVICE_TYPE_QSV) {
+        // QSV via libvpl: create VAAPI child device on the explicit render node,
+        // then derive QSV from it. Direct QSV creation ignores the device path
+        // on multi-GPU systems. Matches FFmpeg CLI: -init_hw_device vaapi=va:/dev/dri/renderDN -init_hw_device qsv=qsv@va
+        AVBufferRef *vaapi_device = NULL;
+        ret = av_hwdevice_ctx_create(&vaapi_device, AV_HWDEVICE_TYPE_VAAPI, params->device, NULL, 0);
+        if (ret >= 0) {
+          ret = av_hwdevice_ctx_create_derived(&ctx->hw_device_ctx, AV_HWDEVICE_TYPE_QSV, vaapi_device, 0);
+          av_buffer_unref(&vaapi_device);
+        }
+      } else {
+        ret = av_hwdevice_ctx_create(&ctx->hw_device_ctx, params->hw_type, params->device, NULL, 0);
+      }
       if (ret < 0) LPMS_ERR(open_decoder_err, "Unable to open hardware context for decoding")
       vc->hw_device_ctx = av_buffer_ref(ctx->hw_device_ctx);
       vc->get_format = get_hw_format;
@@ -312,6 +348,30 @@ int open_video_decoder(input_params *params, struct input_ctx *ctx)
       if (AV_PIX_FMT_NONE == hw2pixfmt(vc)) {
         ret = lpms_ERR_INPUT_CODEC;
         LPMS_ERR(open_decoder_err, "Input codec does not support hardware acceleration");
+      }
+      // Some HW decoders (e.g. CUVID wrappers: av1_cuvid, vp9_cuvid) defer
+      // hw_frames_ctx init until the first frame is decoded.  FFmpeg 8's
+      // buffersrc requires hw_frames_ctx at filter-graph config time, so
+      // create one now from the device context and container metadata.
+      // The filter reinit path (filter.c filtergraph_write) rebuilds the
+      // graph with the decoder's real context on the first decoded frame.
+      if (vc->hw_device_ctx && !vc->hw_frames_ctx) {
+        AVBufferRef *frames_ref = av_hwframe_ctx_alloc(vc->hw_device_ctx);
+        if (frames_ref) {
+          AVHWFramesContext *frames = (AVHWFramesContext *)frames_ref->data;
+          frames->format = hw2pixfmt(vc);
+          frames->sw_format = AV_PIX_FMT_NV12;
+          if (ic->streams[ctx->vi]->codecpar->format == AV_PIX_FMT_YUV420P10LE)
+            frames->sw_format = AV_PIX_FMT_P010LE;
+          frames->width  = vc->width;
+          frames->height = vc->height;
+          ret = av_hwframe_ctx_init(frames_ref);
+          if (ret < 0) {
+            av_buffer_unref(&frames_ref);
+            LPMS_ERR(open_decoder_err, "Unable to init hw frames context for decoder");
+          }
+          vc->hw_frames_ctx = frames_ref;
+        }
       }
     }
   }
