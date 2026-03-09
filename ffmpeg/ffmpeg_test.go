@@ -654,6 +654,11 @@ func supportedCodecsCombinations(accels []Acceleration) []TranscodeOptionsTest {
 						case VP8, VP9:
 							continue
 						}
+					case QSV:
+						switch outCodec {
+						case VP8:
+							continue
+						}
 					}
 					opts = append(opts, TranscodeOptionsTest{
 						InputCodec:  inCodec,

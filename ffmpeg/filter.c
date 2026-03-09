@@ -56,7 +56,7 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
     AVFilterInOut *outputs = NULL;
     AVFilterInOut *inputs  = NULL;
     AVRational time_base = ictx->ic->streams[ictx->vi]->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE }; // XXX ensure the encoder allows this
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_NONE };
     struct filter_ctx *vf = &octx->vf;
     char *filters_descr = octx->vfilters;
     enum AVPixelFormat in_pix_fmt = ictx->vc->pix_fmt;
@@ -109,6 +109,31 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
 
     ret = filtergraph_parser(vf, filters_descr, &inputs, &outputs);
     if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable to parse video filters desc");
+
+    // For SW decode → QSV encode, create a QSV device context and distribute
+    // it to filters that need hardware device access (e.g. hwupload).
+    // CUDA doesn't need this because hwupload_cuda has a built-in device= param.
+    // This follows the same pattern as FFmpeg's CLI in fftools/ffmpeg_filter.c.
+    if (octx->hw_type == AV_HWDEVICE_TYPE_QSV &&
+        (!ictx->vc || !ictx->vc->hw_device_ctx)) {
+      AVBufferRef *hw_device = NULL;
+      // Create VAAPI child device on the explicit render node, then derive QSV.
+      // Direct QSV creation via libvpl ignores the device path on multi-GPU systems.
+      AVBufferRef *vaapi_device = NULL;
+      ret = av_hwdevice_ctx_create(&vaapi_device, AV_HWDEVICE_TYPE_VAAPI,
+                                   octx->device, NULL, 0);
+      if (ret >= 0) {
+        ret = av_hwdevice_ctx_create_derived(&hw_device, AV_HWDEVICE_TYPE_QSV, vaapi_device, 0);
+        av_buffer_unref(&vaapi_device);
+      }
+      if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable to create QSV device context for filters");
+      for (unsigned i = 0; i < vf->graph->nb_filters; i++) {
+        if (vf->graph->filters[i]->filter->flags & AVFILTER_FLAG_HWDEVICE) {
+          vf->graph->filters[i]->hw_device_ctx = av_buffer_ref(hw_device);
+        }
+      }
+      av_buffer_unref(&hw_device);
+    }
 
     ret = avfilter_graph_config(vf->graph, NULL);
     if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable configure video filtergraph");
@@ -210,7 +235,7 @@ int init_signature_filters(struct output_ctx *octx, AVFrame *inf)
     AVFilterInOut *outputs = NULL;
     AVFilterInOut *inputs  = NULL;
     AVRational time_base = octx->oc->streams[0]->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_NONE }; // XXX ensure the encoder allows this
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_NONE };
     struct filter_ctx *sf = &octx->sf;
     char *filters_descr = octx->sfilters;
     enum AVPixelFormat in_pix_fmt = octx->vc->pix_fmt;
@@ -289,8 +314,8 @@ int filtergraph_write(AVFrame *inf, struct input_ctx *ictx, struct output_ctx *o
   // before the decoder is fully ready, and the decoder may change HW params
   // XXX: Unclear if this path is hit on all devices
   if (is_video && inf && (
-      (inf->hw_frames_ctx && filter->hw_frames_ctx &&
-        inf->hw_frames_ctx->data != filter->hw_frames_ctx->data) ||
+      (inf->hw_frames_ctx &&
+        (!filter->hw_frames_ctx || inf->hw_frames_ctx->data != filter->hw_frames_ctx->data)) ||
       (filter->src_ctx->nb_outputs > 0 &&
         filter->src_ctx->outputs[0]->w != inf->width &&
         filter->src_ctx->outputs[0]->h != inf->height))) {

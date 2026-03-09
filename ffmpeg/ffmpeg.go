@@ -54,6 +54,7 @@ const (
 	Nvidia
 	Amd
 	Netint
+	QSV
 )
 
 var AccelerationNameLookup = map[Acceleration]string{
@@ -61,6 +62,7 @@ var AccelerationNameLookup = map[Acceleration]string{
 	Nvidia:   "Nvidia",
 	Amd:      "Amd",
 	Netint:   "Netint",
+	QSV:      "QSV",
 }
 
 var FfEncoderLookup = map[Acceleration]map[VideoCodec]string{
@@ -69,14 +71,23 @@ var FfEncoderLookup = map[Acceleration]map[VideoCodec]string{
 		H265: "libx265",
 		VP8:  "libvpx",
 		VP9:  "libvpx-vp9",
+		AV1:  "libsvtav1",
 	},
 	Nvidia: {
 		H264: "h264_nvenc",
 		H265: "hevc_nvenc",
+		AV1:  "av1_nvenc",
 	},
 	Netint: {
 		H264: "h264_ni_enc",
 		H265: "h265_ni_enc",
+		AV1:  "av1_ni_enc",
+	},
+	QSV: {
+		H264: "h264_qsv",
+		H265: "hevc_qsv",
+		VP9:  "vp9_qsv",
+		AV1:  "av1_qsv",
 	},
 }
 
@@ -490,6 +501,8 @@ func configEncoder(inOpts *TranscodeOptionsIn, outOpts TranscodeOptions) (string
 				upload = upload + "=device=" + outDev
 			}
 			return encoder, upload + "," + hwScale(), hwScaleAlgo(), nil
+		case QSV:
+			return encoder, "hwupload=extra_hw_frames=64,format=qsv,scale_qsv", "", nil
 		}
 	case Nvidia:
 		switch outOpts.Accel {
@@ -510,6 +523,18 @@ func configEncoder(inOpts *TranscodeOptionsIn, outOpts TranscodeOptions) (string
 			// Use software scale filter
 			return encoder, "scale", "", nil
 		}
+	case QSV:
+		switch outOpts.Accel {
+		case QSV:
+			if outDev != "" && outDev != inDev {
+				return "", "", "", ErrTranscoderDev
+			}
+			return encoder, "scale_qsv", "", nil
+		case Software:
+			return encoder, "scale_qsv", "", nil
+		default:
+			return "", "", "", ErrTranscoderDev
+		}
 	}
 	return "", "", "", ErrTranscoderHw
 }
@@ -521,6 +546,8 @@ func accelDeviceType(accel Acceleration) (C.enum_AVHWDeviceType, error) {
 		return C.AV_HWDEVICE_TYPE_CUDA, nil
 	case Netint:
 		return C.AV_HWDEVICE_TYPE_MEDIACODEC, nil
+	case QSV:
+		return C.AV_HWDEVICE_TYPE_QSV, nil
 	}
 	return C.AV_HWDEVICE_TYPE_NONE, ErrTranscoderHw
 }
@@ -551,10 +578,13 @@ func clamp(val, min, max int) int {
 	return val
 }
 
-// 7th Gen NVENC limits:
+// Common codec size limits (used across all accelerators):
 var nvidiaCodecSizeLimts = map[VideoCodec]CodingSizeLimit{
 	H264: {146, 50, 4096, 4096},
 	H265: {132, 40, 8192, 8192},
+	VP8:  {146, 50, 4096, 4096},
+	VP9:  {132, 40, 8192, 8192},
+	AV1:  {132, 40, 8192, 8192},
 }
 
 func isAudioAllDrop(ps []TranscodeOptions) bool {
@@ -620,24 +650,29 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 			maxD = h
 		}
 
+		// Use explicit proportional calculation instead of -2 (auto-scale).
+		// Hardware scalers (scale_cuda, scale_qsv, scale_vt) don't support
+		// negative dimension values; only software scale does.
 		wExpr := fmt.Sprintf(`trunc(
 				if(gte(iw,ih),
-					if(gte(%d*ih/iw,%d),%d,-2),
-					if(gte(%d,%d*iw/ih),%d,-2)
-				)/2)*2`, maxD, limits.HeightMin, maxD, limits.WidthMin, maxD, limits.WidthMin)
+					if(gte(%d*ih/iw,%d),%d,%d*iw/ih),
+					if(gte(%d,%d*iw/ih),%d,%d*iw/ih)
+				)/2)*2`, maxD, limits.HeightMin, maxD, limits.HeightMin,
+			limits.WidthMin, maxD, limits.WidthMin, maxD)
 
 		hExpr := fmt.Sprintf(`trunc(
 			if(gt(ih,iw),
-				if(gte(%d*iw/ih,%d),%d,-2),
-				if(gte(%d,%d*ih/iw),%d,-2)
-			)/2)*2`, maxD, limits.WidthMin, maxD, limits.HeightMin, maxD, limits.HeightMin)
+				if(gte(%d*iw/ih,%d),%d,%d*ih/iw),
+				if(gte(%d,%d*ih/iw),%d,%d*ih/iw)
+			)/2)*2`, maxD, limits.WidthMin, maxD, limits.WidthMin,
+			limits.HeightMin, maxD, limits.HeightMin, maxD)
 
 		filters := fmt.Sprintf("%s='w=%s:h=%s'", scale_filter, wExpr, hExpr)
 
 		if interpAlgo != "" {
 			filters = fmt.Sprintf("%s:interp_algo=%s", filters, interpAlgo)
 		}
-		if input.Accel == Nvidia && p.Accel == Software {
+		if (input.Accel == Nvidia || input.Accel == QSV) && p.Accel == Software {
 			// needed for hw dec -> hw rescale -> sw enc
 			filters = filters + ",hwdownload,format=nv12"
 		}
@@ -676,20 +711,47 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 				"preset":     "medium",
 				"tier":       "high",
 			}
-			if p.Profile.Quality != 0 {
-				if p.Profile.Quality <= 63 {
-					p.VideoEncoder.Opts["crf"] = strconv.Itoa(int(p.Profile.Quality))
-				} else {
-					glog.Warning("Cannot use CRF param, value out of range (0-63)")
+			if p.Accel == QSV {
+				p.VideoEncoder.Opts = map[string]string{
+					"forced_idr": "1",
+					"preset":     "medium",
 				}
-
-				// There's no direct numerical correspondence between CQ and CRF.
-				// From some experiments, it seems that setting CQ = CRF + 7 gives similar visual effects.
-				cq := p.Profile.Quality + 7
-				if cq <= 51 {
-					p.VideoEncoder.Opts["cq"] = strconv.Itoa(int(cq))
+			}
+			// AV1-specific encoder defaults (only for libsvtav1)
+			encoder := FfEncoderLookup[p.Accel][p.Profile.Encoder]
+			if p.Profile.Encoder == AV1 && encoder == "libsvtav1" {
+				delete(p.VideoEncoder.Opts, "forced-idr")
+				delete(p.VideoEncoder.Opts, "forced_idr")
+				p.VideoEncoder.Opts["preset"] = "8"
+				p.VideoEncoder.Opts["tier"] = "0"
+				p.VideoEncoder.Opts["svtav1-params"] = "fast-decode=1"
+			} else if p.Profile.Encoder == AV1 {
+				// Hardware AV1 encoders (av1_nvenc, av1_qsv, av1_ni_enc)
+				// don't use SVT-AV1-specific options
+				delete(p.VideoEncoder.Opts, "tier")
+			}
+			if p.Profile.Quality != 0 {
+				if p.Accel == QSV {
+					if p.Profile.Quality <= 51 {
+						p.VideoEncoder.Opts["global_quality"] = strconv.Itoa(int(p.Profile.Quality))
+					} else {
+						glog.Warning("Cannot use global_quality param, value out of range (0-51)")
+					}
 				} else {
-					glog.Warning("Cannot use CQ param, value out of range (0-51)")
+					if p.Profile.Quality <= 63 {
+						p.VideoEncoder.Opts["crf"] = strconv.Itoa(int(p.Profile.Quality))
+					} else {
+						glog.Warning("Cannot use CRF param, value out of range (0-63)")
+					}
+
+					// There's no direct numerical correspondence between CQ and CRF.
+					// From some experiments, it seems that setting CQ = CRF + 7 gives similar visual effects.
+					cq := p.Profile.Quality + 7
+					if cq <= 51 {
+						p.VideoEncoder.Opts["cq"] = strconv.Itoa(int(cq))
+					} else {
+						glog.Warning("Cannot use CQ param, value out of range (0-51)")
+					}
 				}
 			}
 			switch p.Profile.Profile {
@@ -708,7 +770,7 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 					xcoderOutParamsStr = "profile=high"
 				}
 			case ProfileNone:
-				if p.Accel == Nvidia {
+				if p.Accel == Nvidia || p.Accel == QSV {
 					p.VideoEncoder.Opts["bf"] = "0"
 				} else {
 					p.VideoEncoder.Opts["bf"] = "3"
@@ -716,13 +778,13 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 			default:
 				return params, finalizer, ErrTranscoderPrf
 			}
-			if p.Profile.Framerate == 0 && p.Accel == Nvidia {
+			if p.Profile.Framerate == 0 && (p.Accel == Nvidia || p.Accel == QSV) {
 				// When the decoded video contains non-monotonic increases in PTS (common with OBS)
-				// & when B-frames are enabled nvenc struggles at calculating correct DTS
+				// & when B-frames are enabled HW encoders struggle at calculating correct DTS
 				// XXX so we disable B-frames altogether to avoid PTS < DTS errors
 				if p.VideoEncoder.Opts["bf"] != "0" {
 					p.VideoEncoder.Opts["bf"] = "0"
-					glog.Warning("Forcing max_b_frames=0 for nvenc, as it can't handle those well with timestamp passthrough")
+					glog.Warning("Forcing max_b_frames=0 for HW encoder, as it can't handle those well with timestamp passthrough")
 				}
 			}
 		}
@@ -787,11 +849,16 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 		vfilt := C.CString(filters)
 		oname := C.CString(p.Oname)
 		xcoderOutParams := C.CString(xcoderOutParamsStr)
+		outHwType, _ := accelDeviceType(p.Accel)
 		params[i] = C.output_params{fname: oname, fps: fps,
 			w: C.int(w), h: C.int(h), bitrate: C.int(bitrate),
 			gop_time: C.int(gopMs), from: C.int(fromMs), to: C.int(toMs),
 			muxer: muxOpts, audio: audioOpts, video: vidOpts, metadata: metadata,
-			vfilters: vfilt, sfilters: nil, xcoderParams: xcoderOutParams}
+			vfilters: vfilt, sfilters: nil, xcoderParams: xcoderOutParams,
+			hw_type: outHwType}
+		if p.Device != "" {
+			params[i].device = C.CString(p.Device)
+		}
 		if p.CalcSign {
 			//signfilter string
 			escapedOname := ffmpegStrEscape(p.Oname)
@@ -833,6 +900,9 @@ func destroyCOutputParams(params []C.output_params) {
 		}
 		if p.sfilters != nil {
 			C.free(unsafe.Pointer(p.sfilters))
+		}
+		if p.device != nil {
+			C.free(unsafe.Pointer(p.device))
 		}
 
 		// dictionaries are freed with special function

@@ -192,7 +192,7 @@ int transcode_init(struct transcode_thread *h, input_params *inp,
     if (ret < 0) LPMS_ERR(transcode_cleanup, "Unable to reopen file");
   } else reopen_decoders = 0;
 
-  if (AV_HWDEVICE_TYPE_CUDA == ictx->hw_type && ictx->vi >= 0) {
+  if ((AV_HWDEVICE_TYPE_CUDA == ictx->hw_type || AV_HWDEVICE_TYPE_QSV == ictx->hw_type) && ictx->vi >= 0) {
     if (ictx->last_format == AV_PIX_FMT_NONE) ictx->last_format = ictx->ic->streams[ictx->vi]->codecpar->format;
     else if (ictx->ic->streams[ictx->vi]->codecpar->format != ictx->last_format) {
       LPMS_WARN("Input pixel format has been changed in the middle.");
@@ -236,6 +236,8 @@ int transcode_init(struct transcode_thread *h, input_params *inp,
     if (params[i].gop_time) octx->gop_time = params[i].gop_time;
     if (params[i].from) octx->clip_from = params[i].from;
     if (params[i].to) octx->clip_to = params[i].to;
+    octx->hw_type = params[i].hw_type;
+    octx->device = params[i].device;
     octx->dv = ictx->vi < 0 || is_drop(octx->video->name);
     octx->da = ictx->ai < 0 || is_drop(octx->audio->name);
     octx->res = &results[i];

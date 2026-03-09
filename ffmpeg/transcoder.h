@@ -37,6 +37,8 @@ typedef struct {
   component_opts audio;
   component_opts video;
   AVDictionary *metadata;
+  enum AVHWDeviceType hw_type;
+  char *device;
 } output_params;
 
 typedef struct {
