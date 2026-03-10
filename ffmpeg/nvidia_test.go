@@ -726,10 +726,6 @@ func TestNvidia_DiscontinuityPixelFormat(t *testing.T) {
 	discontinuityPixelFormatSegment(t, Nvidia)
 }
 
-func TestNvidia_CompareVideo(t *testing.T) {
-	compareVideo(t, Nvidia)
-}
-
 func portraitTest(t *testing.T, input string, checkResults bool, profiles []VideoProfile) error {
 	wd, err := os.Getwd()
 	require.NoError(t, err)

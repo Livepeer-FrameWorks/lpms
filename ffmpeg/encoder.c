@@ -23,7 +23,6 @@ static int add_video_stream(struct output_ctx *octx, struct input_ctx *ictx)
     if (ret < 0) LPMS_ERR(add_video_err, "Error copying video params from input stream");
     // Sometimes the codec tag is wonky for some reason, so correct it
     ret = av_codec_get_tag2(octx->oc->oformat->codec_tag, st->codecpar->codec_id, &st->codecpar->codec_tag);
-    avformat_transfer_internal_stream_timing_info(octx->oc->oformat, st, ist, AVFMT_TBCF_DEMUXER);
   } else if (octx->vc) {
     st->time_base = octx->vc->time_base;
     ret = avcodec_parameters_from_context(st->codecpar, octx->vc);
@@ -76,7 +75,6 @@ static int add_audio_stream(struct input_ctx *ictx, struct output_ctx *octx)
     if (ret < 0) LPMS_ERR(add_audio_err, "Error copying audio params from input stream");
     // Sometimes the codec tag is wonky for some reason, so correct it
     ret = av_codec_get_tag2(octx->oc->oformat->codec_tag, st->codecpar->codec_id, &st->codecpar->codec_tag);
-    avformat_transfer_internal_stream_timing_info(octx->oc->oformat, st, ist, AVFMT_TBCF_DEMUXER);
   } else if (octx->ac) {
     st->time_base = octx->ac->time_base;
     ret = avcodec_parameters_from_context(st->codecpar, octx->ac);
@@ -172,7 +170,6 @@ void free_output(struct output_ctx *octx)
   if (octx->vc) avcodec_free_context(&octx->vc);
   free_filter(&octx->vf);
   free_filter(&octx->af);
-  free_filter(&octx->sf);
 }
 
 int open_remux_output(struct input_ctx *ictx, struct output_ctx *octx)
@@ -197,8 +194,6 @@ int open_remux_output(struct input_ctx *ictx, struct output_ctx *octx)
     // Sometimes the codec tag is wonky for some reason, so correct it
     ret = av_codec_get_tag2(octx->oc->oformat->codec_tag,
                             st->codecpar->codec_id, &st->codecpar->codec_tag);
-    avformat_transfer_internal_stream_timing_info(octx->oc->oformat, st, ist,
-                                                  AVFMT_TBCF_DEMUXER);
 
   }
   return 0;
@@ -294,11 +289,6 @@ int open_output(struct output_ctx *octx, struct input_ctx *ictx)
   ret = avformat_write_header(oc, &octx->muxer->opts);
   if (ret < 0) LPMS_ERR(open_output_err, "Error writing header");
 
-  if(octx->sfilters != NULL && needs_decoder(octx->video->name) && octx->sf.active == 0) {
-    ret = init_signature_filters(octx, NULL);
-    if (ret < 0) LPMS_ERR(open_output_err, "Unable to open signature filter");
-  }
-
   octx->initialized = 1;
 
   return 0;
@@ -335,11 +325,6 @@ int reopen_output(struct output_ctx *octx, struct input_ctx *ictx)
   if (octx->metadata) av_dict_copy(&octx->oc->metadata, octx->metadata, 0);
   ret = avformat_write_header(octx->oc, &octx->muxer->opts);
   if (ret < 0) LPMS_ERR(reopen_out_err, "Error re-writing header");
-
-  if(octx->sfilters != NULL && needs_decoder(octx->video->name) && octx->sf.active == 0) {
-    ret = init_signature_filters(octx, NULL);
-    if (ret < 0) LPMS_ERR(reopen_out_err, "Unable to open signature filter");
-  }
 
 reopen_out_err:
   return ret;
@@ -542,22 +527,6 @@ int mux(AVPacket *pkt, AVRational tb, struct output_ctx *octx, AVStream *ost)
   return av_interleaved_write_frame(octx->oc, pkt);
 }
 
-static int calc_signature(AVFrame *inf, struct output_ctx *octx)
-{
-  int ret = 0;
-  if (inf->hw_frames_ctx && octx->sf.hw_frames_ctx && inf->hw_frames_ctx->data != octx->sf.hw_frames_ctx->data) {
-      free_filter(&octx->sf);
-      ret = init_signature_filters(octx, inf);
-      if (ret < 0) return lpms_ERR_FILTERS;
-  }
-  ret = av_buffersrc_write_frame(octx->sf.src_ctx, inf);
-  if (ret < 0) return ret;
-  AVFrame *signframe = octx->sf.frame;
-  av_frame_unref(signframe);
-  ret = av_buffersink_get_frame(octx->sf.sink_ctx, signframe);
-  return ret;
-}
-
 int process_out(struct input_ctx *ictx, struct output_ctx *octx, AVCodecContext *encoder, AVStream *ost,
   struct filter_ctx *filter, AVFrame *inf)
 {
@@ -645,11 +614,6 @@ int process_out(struct input_ctx *ictx, struct output_ctx *octx, AVCodecContext 
         frame->pict_type = AV_PICTURE_TYPE_I;
         octx->next_kf_pts = frame->pts + octx->gop_pts_len;
     }
-
-      if(is_video && frame != NULL && octx->sfilters != NULL) {
-         ret = calc_signature(frame, octx);
-         if(ret < 0) LPMS_WARN("Could not calculate signature value for frame");
-      }
 
       if (frame) {
         // rescale pts to match encoder timebase if necessary (eg, fps passthrough)

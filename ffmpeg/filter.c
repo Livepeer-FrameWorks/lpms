@@ -85,11 +85,14 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
             ictx->vc->sample_aspect_ratio.num, ictx->vc->sample_aspect_ratio.den,
             av_color_space_name(ictx->vc->colorspace), av_color_range_name(ictx->vc->color_range));
 
-    ret = avfilter_graph_create_filter(&vf->src_ctx, buffersrc,
-                                       "in", args, NULL, vf->graph);
-    if (ret < 0) LPMS_ERR(vf_init_cleanup, "Cannot create video buffer source");
+    // FFmpeg 8: buffersrc with a HW pix_fmt requires hw_frames_ctx before init.
+    // Use alloc/params/init instead of avfilter_graph_create_filter.
+    vf->src_ctx = avfilter_graph_alloc_filter(vf->graph, buffersrc, "in");
+    if (!vf->src_ctx) {
+      ret = AVERROR(ENOMEM);
+      LPMS_ERR(vf_init_cleanup, "Cannot create video buffer source");
+    }
     if (ictx->vc && ictx->vc->hw_frames_ctx) {
-      // XXX a bit problematic in that it's set before decoder is fully ready
       AVBufferSrcParameters *srcpar = av_buffersrc_parameters_alloc();
       AVBufferRef *hw_frames_ctx = inf && inf->hw_frames_ctx ? inf->hw_frames_ctx : ictx->vc->hw_frames_ctx;
       srcpar->hw_frames_ctx = hw_frames_ctx;
@@ -97,15 +100,23 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
       av_buffersrc_parameters_set(vf->src_ctx, srcpar);
       av_freep(&srcpar);
     }
+    ret = avfilter_init_str(vf->src_ctx, args);
+    if (ret < 0) LPMS_ERR(vf_init_cleanup, "Cannot create video buffer source");
 
     /* buffer video sink: to terminate the filter chain. */
-    ret = avfilter_graph_create_filter(&vf->sink_ctx, buffersink,
-                                       "out", NULL, NULL, vf->graph);
-    if (ret < 0) LPMS_ERR(vf_init_cleanup, "Cannot create video buffer sink");
+    vf->sink_ctx = avfilter_graph_alloc_filter(vf->graph, buffersink, "out");
+    if (!vf->sink_ctx) {
+      ret = AVERROR(ENOMEM);
+      LPMS_ERR(vf_init_cleanup, "Cannot create video buffer sink");
+    }
 
-    ret = av_opt_set_int_list(vf->sink_ctx, "pix_fmts", pix_fmts,
-                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+    int nb_pix_fmts = sizeof(pix_fmts) / sizeof(pix_fmts[0]) - 1;
+    ret = av_opt_set_array(vf->sink_ctx, "pixel_formats", AV_OPT_SEARCH_CHILDREN,
+                           0, nb_pix_fmts, AV_OPT_TYPE_PIXEL_FMT, pix_fmts);
     if (ret < 0) LPMS_ERR(vf_init_cleanup, "Cannot set output pixel format");
+
+    ret = avfilter_init_dict(vf->sink_ctx, NULL);
+    if (ret < 0) LPMS_ERR(vf_init_cleanup, "Cannot initialize video buffer sink");
 
     ret = filtergraph_parser(vf, filters_descr, &inputs, &outputs);
     if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable to parse video filters desc");
@@ -241,86 +252,6 @@ af_init_cleanup:
   return ret;
 }
 
-int init_signature_filters(struct output_ctx *octx, AVFrame *inf)
-{
-    char args[512];
-    int ret = 0;
-    const AVFilter *buffersrc  = avfilter_get_by_name("buffer");
-    const AVFilter *buffersink = avfilter_get_by_name("buffersink");
-    AVFilterInOut *outputs = NULL;
-    AVFilterInOut *inputs  = NULL;
-    AVRational time_base = octx->oc->streams[0]->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_NONE };
-    struct filter_ctx *sf = &octx->sf;
-    char *filters_descr = octx->sfilters;
-    enum AVPixelFormat in_pix_fmt = octx->vc->pix_fmt;
-    if(octx->sfilters == NULL || strlen(octx->sfilters) <= 0) goto sf_init_cleanup;
-
-    // no need for filters with the following conditions
-    if (sf->active) goto sf_init_cleanup; // already initialized
-    if (!needs_decoder(octx->video->name)) goto sf_init_cleanup;
-
-    outputs = avfilter_inout_alloc();
-    inputs = avfilter_inout_alloc();
-    sf->graph = avfilter_graph_alloc();
-    if (!outputs || !inputs || !sf->graph) {
-      ret = AVERROR(ENOMEM);
-      LPMS_ERR(sf_init_cleanup, "Unable to allocate filters");
-    }
-    if (octx->vc->hw_device_ctx) in_pix_fmt = hw2pixfmt(octx->vc);
-
-    /* buffer video source: the scaled frames from the decoder will be inserted here. */
-    snprintf(args, sizeof args,
-		  "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
-		  octx->vc->width, octx->vc->height, in_pix_fmt,
-		  time_base.num, time_base.den,
-		  octx->vc->sample_aspect_ratio.num, octx->vc->sample_aspect_ratio.den);
-
-    ret = avfilter_graph_create_filter(&sf->src_ctx, buffersrc,
-                                       "in", args, NULL, sf->graph);
-    if (ret < 0) LPMS_ERR(sf_init_cleanup, "Cannot create video buffer source");
-
-    if (octx->vc && inf && inf->hw_frames_ctx) {
-      AVBufferSrcParameters *srcpar = av_buffersrc_parameters_alloc();      
-      srcpar->hw_frames_ctx = inf->hw_frames_ctx;
-      av_buffer_replace(&sf->hw_frames_ctx, inf->hw_frames_ctx);
-      av_buffersrc_parameters_set(sf->src_ctx, srcpar);
-      av_freep(&srcpar);
-    } else if (octx->vc && octx->vc->hw_frames_ctx) {
-      AVBufferSrcParameters *srcpar = av_buffersrc_parameters_alloc();
-      srcpar->hw_frames_ctx = octx->vc->hw_frames_ctx;
-      av_buffer_replace(&sf->hw_frames_ctx, octx->vc->hw_frames_ctx);
-      av_buffersrc_parameters_set(sf->src_ctx, srcpar);
-      av_freep(&srcpar);
-    }
-
-    /* buffer video sink: to terminate the filter chain. */
-    ret = avfilter_graph_create_filter(&sf->sink_ctx, buffersink,
-                                       "out", NULL, NULL, sf->graph);
-    if (ret < 0) LPMS_ERR(sf_init_cleanup, "Cannot create video buffer sink");
-
-    ret = av_opt_set_int_list(sf->sink_ctx, "pix_fmts", pix_fmts,
-                              AV_PIX_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
-    if (ret < 0) LPMS_ERR(sf_init_cleanup, "Cannot set output pixel format");
-
-    ret = filtergraph_parser(sf, filters_descr, &inputs, &outputs);
-    if (ret < 0) LPMS_ERR(sf_init_cleanup, "Unable to parse signature filters desc");
-
-    ret = avfilter_graph_config(sf->graph, NULL);
-    if (ret < 0) LPMS_ERR(sf_init_cleanup, "Unable configure signature filtergraph");
-
-    sf->frame = av_frame_alloc();
-    if (!sf->frame) LPMS_ERR(sf_init_cleanup, "Unable to allocate video frame");
-
-    sf->active = 1;
-
-sf_init_cleanup:
-    avfilter_inout_free(&inputs);
-    avfilter_inout_free(&outputs);
-
-    return ret;
-}
-
 int filtergraph_write(AVFrame *inf, struct input_ctx *ictx, struct output_ctx *octx, struct filter_ctx *filter, int is_video)
 {
   if (filter->closed) return 0;
@@ -346,8 +277,6 @@ int filtergraph_write(AVFrame *inf, struct input_ctx *ictx, struct output_ctx *o
       AVCodecContext *encoder = octx->vc;
 
       // TODO does clipping need to be handled?
-      // TODO calculate signature?
-
       // Set GOP interval if necessary
       if (octx->gop_pts_len && frame && frame->pts >= octx->next_kf_pts) {
         frame->pict_type = AV_PICTURE_TYPE_I;

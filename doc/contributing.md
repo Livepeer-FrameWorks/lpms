@@ -22,7 +22,7 @@ When working on CGO interface, or [FFmpeg](https://github.com/livepeer/FFmpeg/) 
         --enable-bsf=h264_mp4toannexb,aac_adtstoasc,h264_metadata,h264_redundant_pps,extract_extradata \
         --enable-parser=aac,aac_latm,h264 \
         --enable-filter=abuffer,buffer,abuffersink,buffersink,afifo,fifo,aformat,format \
-        --enable-filter=aresample,asetnsamples,fps,scale,hwdownload,select,livepeer_dnn,signature \
+        --enable-filter=aresample,asetnsamples,fps,scale,hwdownload,select \
         --enable-encoder=aac,libx264 \
         --enable-decoder=aac,h264 \
         --extra-cflags="-I${ROOT}/compiled_debug/include -g3 -ggdb -fno-inline" \
