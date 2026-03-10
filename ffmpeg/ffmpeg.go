@@ -40,9 +40,7 @@ var ErrTranscoderPrf = errors.New("TranscoderUnrecognizedProfile")
 var ErrTranscoderGOP = errors.New("TranscoderInvalidGOP")
 var ErrTranscoderDev = errors.New("TranscoderIncompatibleDevices")
 var ErrEmptyData = errors.New("EmptyData")
-var ErrSignCompare = errors.New("InvalidSignData")
 var ErrTranscoderPixelformat = errors.New("TranscoderInvalidPixelformat")
-var ErrVideoCompare = errors.New("InvalidVideoData")
 
 // Switch to turn off logging transcoding errors, when doing test transcoding
 var LogTranscodeErrors = true
@@ -124,8 +122,7 @@ type TranscodeOptions struct {
 	Profile  VideoProfile
 	Accel    Acceleration
 	Device   string
-	CalcSign bool
-	From     time.Duration
+	From time.Duration
 	To       time.Duration
 
 	Muxer        ComponentOptions
@@ -363,82 +360,6 @@ func HasZeroVideoFrameBytes(data []byte) (bool, error) {
 	status, _, err := GetCodecInfo(fname)
 	ow.Close()
 	return status == CodecStatusNeedsBypass, err
-}
-
-// compare two signature files whether those matches or not
-func CompareSignatureByPath(fname1 string, fname2 string) (bool, error) {
-	if len(fname1) <= 0 || len(fname2) <= 0 {
-		return false, nil
-	}
-	cfpath1 := C.CString(fname1)
-	defer C.free(unsafe.Pointer(cfpath1))
-	cfpath2 := C.CString(fname2)
-	defer C.free(unsafe.Pointer(cfpath2))
-
-	res := int(C.lpms_compare_sign_bypath(cfpath1, cfpath2))
-
-	if res > 0 {
-		return true, nil
-	} else if res == 0 {
-		return false, nil
-	} else {
-		return false, ErrSignCompare
-	}
-}
-
-// compare two signature buffers whether those matches or not
-func CompareSignatureByBuffer(data1 []byte, data2 []byte) (bool, error) {
-
-	pdata1 := unsafe.Pointer(&data1[0])
-	pdata2 := unsafe.Pointer(&data2[0])
-
-	res := int(C.lpms_compare_sign_bybuffer(pdata1, C.int(len(data1)), pdata2, C.int(len(data2))))
-
-	if res > 0 {
-		return true, nil
-	} else if res == 0 {
-		return false, nil
-	} else {
-		return false, ErrSignCompare
-	}
-}
-
-// compare two vidoe files whether those matches or not
-func CompareVideoByPath(fname1 string, fname2 string) (bool, error) {
-	if len(fname1) <= 0 || len(fname2) <= 0 {
-		return false, nil
-	}
-	cfpath1 := C.CString(fname1)
-	defer C.free(unsafe.Pointer(cfpath1))
-	cfpath2 := C.CString(fname2)
-	defer C.free(unsafe.Pointer(cfpath2))
-
-	res := int(C.lpms_compare_video_bypath(cfpath1, cfpath2))
-
-	if res == 0 {
-		return true, nil
-	} else if res == 1 {
-		return false, nil
-	} else {
-		return false, ErrVideoCompare
-	}
-}
-
-// compare two video buffers whether those matches or not
-func CompareVideoByBuffer(data1 []byte, data2 []byte) (bool, error) {
-
-	pdata1 := unsafe.Pointer(&data1[0])
-	pdata2 := unsafe.Pointer(&data2[0])
-
-	res := int(C.lpms_compare_video_bybuffer(pdata1, C.int(len(data1)), pdata2, C.int(len(data2))))
-
-	if res == 0 {
-		return true, nil
-	} else if res == 1 {
-		return false, nil
-	} else {
-		return false, ErrVideoCompare
-	}
 }
 
 func RTMPToHLS(localRTMPUrl string, outM3U8 string, tmpl string, seglen_secs string, seg_start int) error {
@@ -878,21 +799,10 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 			w: C.int(w), h: C.int(h), bitrate: C.int(bitrate),
 			gop_time: C.int(gopMs), from: C.int(fromMs), to: C.int(toMs),
 			muxer: muxOpts, audio: audioOpts, video: vidOpts, metadata: metadata,
-			vfilters: vfilt, sfilters: nil, xcoderParams: xcoderOutParams,
+			vfilters: vfilt, xcoderParams: xcoderOutParams,
 			hw_type: outHwType}
 		if p.Device != "" {
 			params[i].device = C.CString(p.Device)
-		}
-		if p.CalcSign {
-			//signfilter string
-			escapedOname := ffmpegStrEscape(p.Oname)
-			signfilter := fmt.Sprintf("signature=filename='%s.bin'", escapedOname)
-			if p.Accel == Nvidia {
-				//hw frame -> cuda signature -> sign.bin
-				signfilter = fmt.Sprintf("signature_cuda=filename='%s.bin'", escapedOname)
-			}
-			sfilt := C.CString(signfilter)
-			params[i].sfilters = sfilt
 		}
 	}
 
@@ -921,9 +831,6 @@ func destroyCOutputParams(params []C.output_params) {
 		}
 		if p.muxer.name != nil {
 			C.free(unsafe.Pointer(p.muxer.name))
-		}
-		if p.sfilters != nil {
-			C.free(unsafe.Pointer(p.sfilters))
 		}
 		if p.device != nil {
 			C.free(unsafe.Pointer(p.device))
@@ -1200,12 +1107,6 @@ func createBackendConfig(deviceid string) string {
 		sessConfigOpt += hex.EncodeToString(bytes[i : i+1])
 	}
 	return sessConfigOpt
-}
-
-func ffmpegStrEscape(origStr string) string {
-	tmpStr := strings.ReplaceAll(origStr, "\\", "\\\\")
-	outStr := strings.ReplaceAll(tmpStr, ":", "\\:")
-	return outStr
 }
 
 func hwScale() string {

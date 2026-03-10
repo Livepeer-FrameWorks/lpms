@@ -2,6 +2,19 @@
 
 set -exuo pipefail
 
+# Handle 'clean' subcommand: remove all build artifacts
+if [[ "${1:-}" == "clean" ]]; then
+  ROOT="${2:-$HOME}"
+  echo "Cleaning FFmpeg build artifacts from $ROOT ..."
+  rm -rf "$ROOT/ffmpeg" "$ROOT/x264" "$ROOT/SVT-AV1" "$ROOT/dav1d" \
+         "$ROOT/compiled" "$ROOT/nv-codec-headers" "$ROOT/libvpl" \
+         "$ROOT/nasm-2.14.02" "$ROOT/x265" "$ROOT/libvpx"
+  rm -f  "$ROOT"/zlib-*.tar.gz "$ROOT"/nasm-*.tar.gz
+  rm -rf "$ROOT"/zlib-*/
+  echo "Done."
+  exit 0
+fi
+
 ROOT="${1:-$HOME}"
 NPROC="${NPROC:-$(nproc)}"
 EXTRA_CFLAGS=""
@@ -156,7 +169,8 @@ fi
 
 if [[ ! -e "$ROOT/zlib-1.3.1" ]]; then
   cd "$ROOT"
-  curl -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz
+  curl -fL -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz \
+    || curl -fL -o zlib-1.3.1.tar.gz https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
   tar xf zlib-1.3.1.tar.gz
   cd zlib-1.3.1
   ./configure --prefix="$ROOT/compiled" --static
@@ -248,6 +262,9 @@ c = '${CROSS_CC_BIN:-cc}'
 ar = '${AR:-ar}'
 strip = '${STRIP:-strip}'
 windres = '${WINDRES_BIN:-windres}'
+
+[properties]
+needs_exe_wrapper = true
 
 [host_machine]
 system = '$MESON_SYSTEM'
@@ -356,7 +373,7 @@ if [[ $BUILD_TAGS == *"debug-video"* ]]; then
 else
   # disable all unnecessary features for production build
   DISABLE_FFMPEG_COMPONENTS+=" --disable-doc --disable-sdl2 --disable-iconv --disable-muxers --disable-demuxers --disable-parsers --disable-protocols "
-  DISABLE_FFMPEG_COMPONENTS+=" --disable-encoders --disable-decoders --disable-filters --disable-bsfs --disable-postproc --disable-lzma "
+  DISABLE_FFMPEG_COMPONENTS+=" --disable-encoders --disable-decoders --disable-filters --disable-bsfs --disable-lzma "
 fi
 
 # Extra libs for static linking — Windows uses Win32 threads, not pthreads
@@ -366,9 +383,9 @@ if [[ "$GOOS" != "windows" ]]; then
 fi
 
 if [[ ! -e "$ROOT/ffmpeg/libavcodec/libavcodec.a" ]]; then
-  git clone https://github.com/livepeer/FFmpeg.git "$ROOT/ffmpeg" || echo "FFmpeg dir already exists"
+  git clone https://github.com/Livepeer-FrameWorks/FFmpeg.git "$ROOT/ffmpeg" || echo "FFmpeg dir already exists"
   cd "$ROOT/ffmpeg"
-  git checkout d9751c73e714b01b363483db358b1ea8022c9bea
+  git checkout 6a5a1152ec55fe9db1c0af72c3eaa458ba11d07e
   ./configure ${TARGET_OS:-} $DISABLE_FFMPEG_COMPONENTS --fatal-warnings \
     --enable-libx264 --enable-libsvtav1 --enable-libdav1d --enable-gpl \
     --enable-protocol=rtmp,file,pipe \
@@ -376,7 +393,7 @@ if [[ ! -e "$ROOT/ffmpeg/libavcodec/libavcodec.a" ]]; then
     --enable-bsf=h264_mp4toannexb,aac_adtstoasc,h264_metadata,h264_redundant_pps,hevc_mp4toannexb,extract_extradata,av1_metadata \
     --enable-parser=mpegaudio,vorbis,opus,flac,aac,aac_latm,h264,hevc,vp8,vp9,av1,png \
     --enable-filter=abuffer,buffer,abuffersink,buffersink,afifo,fifo,aformat,format \
-    --enable-filter=aresample,asetnsamples,fps,scale,hwdownload,select,livepeer_dnn,signature \
+    --enable-filter=aresample,asetnsamples,fps,scale,hwdownload,select \
     --enable-encoder=mp3,vorbis,flac,aac,opus,libx264,libsvtav1 \
     --enable-decoder=mp3,vorbis,flac,aac,opus,h264,libdav1d,png \
     --extra-cflags="${EXTRA_CFLAGS} -I${ROOT}/compiled/include -I/usr/local/cuda/include" \

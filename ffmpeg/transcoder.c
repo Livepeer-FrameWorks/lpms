@@ -139,11 +139,6 @@ int transcode_shutdown(struct transcode_thread *h, int ret)
   if (ictx->ac) avcodec_free_context(&ictx->ac);
   if (ictx->vc && (AV_HWDEVICE_TYPE_NONE == ictx->hw_type)) avcodec_free_context(&ictx->vc);
   for (int i = 0; i < nb_outputs; i++) {
-    //send EOF signal to signature filter
-    if(outputs[i].sfilters != NULL && outputs[i].sf.src_ctx != NULL) {
-      av_buffersrc_close(outputs[i].sf.src_ctx, AV_NOPTS_VALUE, AV_BUFFERSRC_FLAG_PUSH);
-      free_filter(&outputs[i].sf);
-    }
     close_output(&outputs[i]);
   }
   return ret == AVERROR_EOF ? 0 : ret;
@@ -230,7 +225,6 @@ int transcode_init(struct transcode_thread *h, input_params *inp,
     octx->video = &params[i].video;
     octx->metadata = params[i].metadata;
     octx->vfilters = params[i].vfilters;
-    octx->sfilters = params[i].sfilters;
     octx->xcoderParams = params[i].xcoderParams;
     if (params[i].bitrate) octx->bitrate = params[i].bitrate;
     if (params[i].fps.den) octx->fps = params[i].fps;
