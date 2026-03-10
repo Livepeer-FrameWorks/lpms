@@ -55,14 +55,16 @@ const (
 	Amd
 	Netint
 	QSV
+	Videotoolbox
 )
 
 var AccelerationNameLookup = map[Acceleration]string{
-	Software: "SW",
-	Nvidia:   "Nvidia",
-	Amd:      "Amd",
-	Netint:   "Netint",
-	QSV:      "QSV",
+	Software:     "SW",
+	Nvidia:       "Nvidia",
+	Amd:          "Amd",
+	Netint:       "Netint",
+	QSV:          "QSV",
+	Videotoolbox: "Videotoolbox",
 }
 
 var FfEncoderLookup = map[Acceleration]map[VideoCodec]string{
@@ -88,6 +90,10 @@ var FfEncoderLookup = map[Acceleration]map[VideoCodec]string{
 		H265: "hevc_qsv",
 		VP9:  "vp9_qsv",
 		AV1:  "av1_qsv",
+	},
+	Videotoolbox: {
+		H264: "h264_videotoolbox",
+		H265: "hevc_videotoolbox",
 	},
 }
 
@@ -503,6 +509,8 @@ func configEncoder(inOpts *TranscodeOptionsIn, outOpts TranscodeOptions) (string
 			return encoder, upload + "," + hwScale(), hwScaleAlgo(), nil
 		case QSV:
 			return encoder, "hwupload=extra_hw_frames=64,format=qsv,scale_qsv", "", nil
+		case Videotoolbox:
+			return encoder, "format=nv12,hwupload,scale_vt", "", nil
 		}
 	case Nvidia:
 		switch outOpts.Accel {
@@ -535,6 +543,15 @@ func configEncoder(inOpts *TranscodeOptionsIn, outOpts TranscodeOptions) (string
 		default:
 			return "", "", "", ErrTranscoderDev
 		}
+	case Videotoolbox:
+		switch outOpts.Accel {
+		case Videotoolbox:
+			return encoder, "scale_vt", "", nil
+		case Software:
+			return encoder, "scale_vt", "", nil
+		default:
+			return "", "", "", ErrTranscoderDev
+		}
 	}
 	return "", "", "", ErrTranscoderHw
 }
@@ -548,6 +565,8 @@ func accelDeviceType(accel Acceleration) (C.enum_AVHWDeviceType, error) {
 		return C.AV_HWDEVICE_TYPE_MEDIACODEC, nil
 	case QSV:
 		return C.AV_HWDEVICE_TYPE_QSV, nil
+	case Videotoolbox:
+		return C.AV_HWDEVICE_TYPE_VIDEOTOOLBOX, nil
 	}
 	return C.AV_HWDEVICE_TYPE_NONE, ErrTranscoderHw
 }
@@ -672,7 +691,7 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 		if interpAlgo != "" {
 			filters = fmt.Sprintf("%s:interp_algo=%s", filters, interpAlgo)
 		}
-		if (input.Accel == Nvidia || input.Accel == QSV) && p.Accel == Software {
+		if (input.Accel == Nvidia || input.Accel == QSV || input.Accel == Videotoolbox) && p.Accel == Software {
 			// needed for hw dec -> hw rescale -> sw enc
 			filters = filters + ",hwdownload,format=nv12"
 		}
@@ -717,6 +736,9 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 					"preset":     "medium",
 				}
 			}
+			if p.Accel == Videotoolbox {
+				p.VideoEncoder.Opts = map[string]string{}
+			}
 			// AV1-specific encoder defaults (only for libsvtav1)
 			encoder := FfEncoderLookup[p.Accel][p.Profile.Encoder]
 			if p.Profile.Encoder == AV1 && encoder == "libsvtav1" {
@@ -731,7 +753,9 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 				delete(p.VideoEncoder.Opts, "tier")
 			}
 			if p.Profile.Quality != 0 {
-				if p.Accel == QSV {
+				if p.Accel == Videotoolbox {
+					// VideoToolbox does not support CRF/CQ/global_quality; use bitrate mode
+				} else if p.Accel == QSV {
 					if p.Profile.Quality <= 51 {
 						p.VideoEncoder.Opts["global_quality"] = strconv.Itoa(int(p.Profile.Quality))
 					} else {
