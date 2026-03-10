@@ -154,11 +154,11 @@ if [[ ! -e "$ROOT/x264" ]]; then
   make -j$NPROC install-lib-static
 fi
 
-if [[ ! -e "$ROOT/zlib-1.2.11" ]]; then
+if [[ ! -e "$ROOT/zlib-1.3.1" ]]; then
   cd "$ROOT"
-  curl -o zlib-1.2.11.tar.gz https://zlib.net/fossils/zlib-1.2.11.tar.gz
-  tar xf zlib-1.2.11.tar.gz
-  cd zlib-1.2.11
+  curl -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz
+  tar xf zlib-1.3.1.tar.gz
+  cd zlib-1.3.1
   ./configure --prefix="$ROOT/compiled" --static
   make -j$NPROC
   make -j$NPROC install
@@ -320,7 +320,8 @@ EXTRA_FFMPEG_LDFLAGS="$EXTRA_LDFLAGS"
 DEV_FFMPEG_FLAGS=""
 
 if [[ "$BUILDOS" == "darwin" && "$GOOS" == "darwin" ]]; then
-  EXTRA_FFMPEG_LDFLAGS="$EXTRA_FFMPEG_LDFLAGS -framework CoreFoundation -framework Security"
+  EXTRA_FFMPEG_LDFLAGS="$EXTRA_FFMPEG_LDFLAGS -framework CoreFoundation -framework Security -framework VideoToolbox -framework CoreMedia -framework CoreVideo"
+  EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-videotoolbox --enable-encoder=h264_videotoolbox,hevc_videotoolbox --enable-filter=scale_vt,hwupload"
 elif [[ "$GOOS" == "windows" ]]; then
   EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-d3d11va --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid,av1_cuvid --enable-filter=scale_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc"
 elif [[ -e "/usr/local/cuda/lib64" ]]; then

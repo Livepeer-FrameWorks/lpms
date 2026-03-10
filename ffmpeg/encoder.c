@@ -243,7 +243,8 @@ int open_output(struct output_ctx *octx, struct input_ctx *ictx)
     if (octx->fps.den) vc->time_base = av_buffersink_get_time_base(octx->vf.sink_ctx);
     else if (ictx->vc->framerate.num && ictx->vc->framerate.den) vc->time_base = av_inv_q(ictx->vc->framerate);
     else vc->time_base = ictx->ic->streams[ictx->vi]->time_base;
-    vc->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
+    if (codec->capabilities & AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE)
+      vc->flags |= AV_CODEC_FLAG_COPY_OPAQUE;
     if (octx->bitrate) vc->rc_min_rate = vc->bit_rate = vc->rc_max_rate = vc->rc_buffer_size = octx->bitrate;
     if (av_buffersink_get_hw_frames_ctx(octx->vf.sink_ctx)) {
       vc->hw_frames_ctx =
@@ -393,7 +394,7 @@ int encode(AVCodecContext* encoder, AVFrame *frame, struct output_ctx* octx, AVS
         ret = avcodec_receive_packet(encoder, pkt);
         // TODO error handling
         if (!ret) {
-          if (!octx->fps.den && octx->vf.active) {
+          if (!octx->fps.den && octx->vf.active && (encoder->flags & AV_CODEC_FLAG_COPY_OPAQUE)) {
             // adjust timestamps for filter passthrough
             time_base = octx->vf.time_base;
             int64_t pts_dts = pkt->pts - pkt->dts;
@@ -436,7 +437,8 @@ int encode(AVCodecContext* encoder, AVFrame *frame, struct output_ctx* octx, AVS
   }
 
   if (AVMEDIA_TYPE_VIDEO == ost->codecpar->codec_type &&
-      (AV_HWDEVICE_TYPE_CUDA == octx->hw_type || AV_HWDEVICE_TYPE_QSV == octx->hw_type) && !frame) {
+      (AV_HWDEVICE_TYPE_CUDA == octx->hw_type || AV_HWDEVICE_TYPE_QSV == octx->hw_type ||
+       AV_HWDEVICE_TYPE_VIDEOTOOLBOX == octx->hw_type) && !frame) {
     avcodec_flush_buffers(encoder);
   }
 
@@ -451,8 +453,10 @@ int encode(AVCodecContext* encoder, AVFrame *frame, struct output_ctx* octx, AVS
     if (AVERROR(EAGAIN) == ret || AVERROR_EOF == ret) goto encode_cleanup;
     if (ret < 0) LPMS_ERR(encode_cleanup, "Error receiving packet from encoder");
     AVRational time_base = encoder->time_base;
-    if (AVMEDIA_TYPE_VIDEO == ost->codecpar->codec_type && !octx->fps.den && octx->vf.active) {
+    if (AVMEDIA_TYPE_VIDEO == ost->codecpar->codec_type && !octx->fps.den && octx->vf.active
+        && (encoder->flags & AV_CODEC_FLAG_COPY_OPAQUE)) {
       // try to preserve source timestamps for fps passthrough.
+      // Only when COPY_OPAQUE is supported; otherwise use encoder's native PTS.
       time_base = octx->vf.time_base;
       int64_t pts_dts_diff = pkt->pts - pkt->dts;
       pkt->pts = (int64_t)pkt->opaque; // already in filter timebase

@@ -56,7 +56,7 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
     AVFilterInOut *outputs = NULL;
     AVFilterInOut *inputs  = NULL;
     AVRational time_base = ictx->ic->streams[ictx->vi]->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_NONE };
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_NONE };
     struct filter_ctx *vf = &octx->vf;
     char *filters_descr = octx->vfilters;
     enum AVPixelFormat in_pix_fmt = ictx->vc->pix_fmt;
@@ -127,6 +127,21 @@ int init_video_filters(struct input_ctx *ictx, struct output_ctx *octx, AVFrame 
         av_buffer_unref(&vaapi_device);
       }
       if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable to create QSV device context for filters");
+      for (unsigned i = 0; i < vf->graph->nb_filters; i++) {
+        if (vf->graph->filters[i]->filter->flags & AVFILTER_FLAG_HWDEVICE) {
+          vf->graph->filters[i]->hw_device_ctx = av_buffer_ref(hw_device);
+        }
+      }
+      av_buffer_unref(&hw_device);
+    }
+
+    // SW decode -> VideoToolbox encode: create VT device context for hwupload filter
+    if (octx->hw_type == AV_HWDEVICE_TYPE_VIDEOTOOLBOX &&
+        (!ictx->vc || !ictx->vc->hw_device_ctx)) {
+      AVBufferRef *hw_device = NULL;
+      ret = av_hwdevice_ctx_create(&hw_device, AV_HWDEVICE_TYPE_VIDEOTOOLBOX,
+                                   NULL, NULL, 0);
+      if (ret < 0) LPMS_ERR(vf_init_cleanup, "Unable to create VideoToolbox device context for filters");
       for (unsigned i = 0; i < vf->graph->nb_filters; i++) {
         if (vf->graph->filters[i]->filter->flags & AVFILTER_FLAG_HWDEVICE) {
           vf->graph->filters[i]->hw_device_ctx = av_buffer_ref(hw_device);
@@ -235,7 +250,7 @@ int init_signature_filters(struct output_ctx *octx, AVFrame *inf)
     AVFilterInOut *outputs = NULL;
     AVFilterInOut *inputs  = NULL;
     AVRational time_base = octx->oc->streams[0]->time_base;
-    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_NONE };
+    enum AVPixelFormat pix_fmts[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_CUDA, AV_PIX_FMT_QSV, AV_PIX_FMT_VIDEOTOOLBOX, AV_PIX_FMT_NONE };
     struct filter_ctx *sf = &octx->sf;
     char *filters_descr = octx->sfilters;
     enum AVPixelFormat in_pix_fmt = octx->vc->pix_fmt;

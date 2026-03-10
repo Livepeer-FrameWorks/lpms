@@ -192,7 +192,8 @@ int transcode_init(struct transcode_thread *h, input_params *inp,
     if (ret < 0) LPMS_ERR(transcode_cleanup, "Unable to reopen file");
   } else reopen_decoders = 0;
 
-  if ((AV_HWDEVICE_TYPE_CUDA == ictx->hw_type || AV_HWDEVICE_TYPE_QSV == ictx->hw_type) && ictx->vi >= 0) {
+  if ((AV_HWDEVICE_TYPE_CUDA == ictx->hw_type || AV_HWDEVICE_TYPE_QSV == ictx->hw_type ||
+       AV_HWDEVICE_TYPE_VIDEOTOOLBOX == ictx->hw_type) && ictx->vi >= 0) {
     if (ictx->last_format == AV_PIX_FMT_NONE) ictx->last_format = ictx->ic->streams[ictx->vi]->codecpar->format;
     else if (ictx->ic->streams[ictx->vi]->codecpar->format != ictx->last_format) {
       LPMS_WARN("Input pixel format has been changed in the middle.");
