@@ -16,7 +16,7 @@ if [[ "${1:-}" == "clean" ]]; then
 fi
 
 ROOT="${1:-$HOME}"
-NPROC="${NPROC:-$(nproc)}"
+NPROC="${NPROC:-$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)}"
 EXTRA_CFLAGS=""
 EXTRA_LDFLAGS=""
 EXTRA_X264_FLAGS=""
