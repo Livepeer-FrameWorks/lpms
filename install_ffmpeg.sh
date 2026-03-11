@@ -343,7 +343,7 @@ elif [[ "$GOOS" == "windows" ]]; then
   EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-d3d11va --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid,av1_cuvid --enable-filter=scale_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc"
 elif [[ -e "/usr/local/cuda/lib64" ]]; then
   echo "CUDA SDK detected, building with GPU support"
-  EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-nonfree --enable-cuda-nvcc --enable-libnpp --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvdec --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid,av1_cuvid --enable-filter=scale_npp,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc"
+  EXTRA_FFMPEG_FLAGS="$EXTRA_FFMPEG_FLAGS --enable-cuda --enable-cuda-llvm --enable-cuvid --enable-nvdec --enable-nvenc --enable-decoder=h264_cuvid,hevc_cuvid,vp8_cuvid,vp9_cuvid,av1_cuvid --enable-filter=scale_cuda,hwupload_cuda --enable-encoder=h264_nvenc,hevc_nvenc,av1_nvenc"
 else
   echo "No CUDA SDK detected, building without GPU support"
 fi

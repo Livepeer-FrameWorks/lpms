@@ -9,7 +9,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -617,8 +616,7 @@ func createCOutputParams(input *TranscodeOptionsIn, ps []TranscodeOptions) ([]C.
 			filters = filters + ",hwdownload,format=nv12"
 		}
 		if p.Accel == Nvidia && filepath.Ext(input.Fname) == ".png" {
-			// If the input is PNG image(s) and we are scaling on a Nvidia device
-			// we need to first convert to a pixel format that the scale_npp filter supports
+			// PNG inputs need explicit pixel format conversion before CUDA scaling
 			filters = "format=nv12," + filters
 		}
 		// set FPS denominator to 1 if unset by user
@@ -1110,21 +1108,15 @@ func createBackendConfig(deviceid string) string {
 }
 
 func hwScale() string {
-	if runtime.GOOS == "windows" {
-		// we don't build windows binaries with CUDA SDK, so need to use scale_cuda instead of scale_npp
-		return "scale_cuda"
-	} else {
-		return "scale_npp"
-	}
+	// scale_cuda uses the stable libcuda.so.1 driver API (works across all CUDA versions)
+	// and supports all pixel formats from newer codecs like AV1 cuvid.
+	// scale_npp requires version-specific NPP libs and has format limitations.
+	return "scale_cuda"
 }
 
 func hwScaleAlgo() string {
-	if runtime.GOOS == "windows" {
-		// we don't build windows binaries with CUDA SDK, so need to use the default scale algorithm
-		return ""
-	} else {
-		return "super"
-	}
+	// scale_cuda doesn't support the "super" algorithm (that was scale_npp-specific)
+	return ""
 }
 
 func FfmpegSetLogLevel(level int) {
