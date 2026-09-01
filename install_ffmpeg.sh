@@ -169,8 +169,9 @@ fi
 
 if [[ ! -e "$ROOT/zlib-1.3.1" ]]; then
   cd "$ROOT"
-  curl -fsSL --retry 5 --retry-delay 2 --connect-timeout 15 -o zlib-1.3.1.tar.gz https://zlib.net/fossils/zlib-1.3.1.tar.gz \
-    || curl -fsSL --retry 5 --retry-delay 2 --connect-timeout 15 -o zlib-1.3.1.tar.gz https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+  curl -fsSL --retry 5 --retry-delay 2 --connect-timeout 15 -o zlib-1.3.1.tar.gz \
+    https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+  echo '9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23  zlib-1.3.1.tar.gz' | sha256sum -c -
   tar xf zlib-1.3.1.tar.gz
   cd zlib-1.3.1
   ./configure --prefix="$ROOT/compiled" --static
